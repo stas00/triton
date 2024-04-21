@@ -1,15 +1,21 @@
 #ifndef TRITON_CONVERSION_TRITONGPU_TO_LLVM_UTILITY_H
 #define TRITON_CONVERSION_TRITONGPU_TO_LLVM_UTILITY_H
 
+#include <set>
+
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "triton/Analysis/Utility.h"
 #include "triton/Conversion/MLIRTypes.h"
 #include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
+#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#include "triton/Tools/LinearLayout.h"
+#include "triton/Tools/Sys/GetEnv.hpp"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
-#include <set>
 
 #define DEBUG_TYPE "ttgpu_to_llvm"
 #define DBGS() (llvm::dbgs() << "[" DEBUG_TYPE "]: ")
@@ -128,6 +134,7 @@ using namespace mlir::triton;
 // Attributes
 #define i32_arr_attr(...) rewriter.getI32ArrayAttr({__VA_ARGS__})
 #define i64_arr_attr(...) rewriter.getI64ArrayAttr({__VA_ARGS__})
+#define str_attr(str) rewriter.getStringAttr(str)
 
 namespace mlir {
 namespace triton {
@@ -429,48 +436,47 @@ inline Value dot(RewriterBase &rewriter, Location loc, ArrayRef<Value> offsets,
 // Blocked layout indices
 // -----------------------------------------------------------------------
 
+SmallVector<std::pair<StringAttr, Value>>
+applyLinearLayout(Location loc, RewriterBase &rewriter,
+                  const LinearLayout &layout,
+                  ArrayRef<std::pair<StringAttr, Value>> indices);
+
 // Get an index-base for each dimension for a \param blockedLayout.
 inline SmallVector<Value>
 emitBaseIndexWithinCTAForBlockedLayout(Location loc, RewriterBase &rewriter,
                                        const BlockedEncodingAttr &blockedLayout,
                                        RankedTensorType type) {
+  MLIRContext *ctx = rewriter.getContext();
   auto shape = type.getShape();
   Value threadId = getThreadId(rewriter, loc);
   Value warpSize = i32_val(triton::gpu::getWarpSize(blockedLayout));
   Value laneId = urem(threadId, warpSize);
   Value warpId = udiv(threadId, warpSize);
-  auto sizePerThread = blockedLayout.getSizePerThread();
-  auto threadsPerWarp = blockedLayout.getThreadsPerWarp();
-  auto warpsPerCTA = blockedLayout.getWarpsPerCTA();
-  auto order = blockedLayout.getOrder();
-  auto shapePerCTA = triton::gpu::getShapePerCTA(blockedLayout, shape);
   unsigned rank = shape.size();
 
-  // delinearize threadId to get the base index
-  SmallVector<Value> multiDimWarpId =
-      delinearize(rewriter, loc, warpId, warpsPerCTA, order);
-  SmallVector<Value> multiDimThreadId =
-      delinearize(rewriter, loc, laneId, threadsPerWarp, order);
-
-  SmallVector<Value> multiDimBase(rank);
+  SmallVector<StringAttr> outDimsLogicalOrder;
   for (unsigned k = 0; k < rank; ++k) {
-    // Wrap around multiDimWarpId/multiDimThreadId in case
-    // shapePerCTATile[k] > shapePerCTA[k]
-    auto maxWarps =
-        ceil<unsigned>(shapePerCTA[k], sizePerThread[k] * threadsPerWarp[k]);
-    auto maxThreads = ceil<unsigned>(shapePerCTA[k], sizePerThread[k]);
-    multiDimWarpId[k] = urem(multiDimWarpId[k], i32_val(maxWarps));
-    multiDimThreadId[k] = urem(multiDimThreadId[k], i32_val(maxThreads));
-    // multiDimBase[k] = (multiDimThreadId[k] +
-    //                    multiDimWarpId[k] * threadsPerWarp[k]) *
-    //                   sizePerThread[k];
-    Value threadsPerWarpK = i32_val(threadsPerWarp[k]);
-    Value sizePerThreadK = i32_val(sizePerThread[k]);
-    multiDimBase[k] =
-        mul(sizePerThreadK,
-            add(multiDimThreadId[k], mul(multiDimWarpId[k], threadsPerWarpK)));
+    outDimsLogicalOrder.push_back(str_attr("dim" + Twine(k)));
   }
-  return multiDimBase;
+
+  // TODO(jlebar): We could add strong typing if we wanted; for now this is
+  // "stringly typed".
+  SmallVector<std::pair<StringAttr, Value>> linearMultiDimBase =
+      applyLinearLayout(loc, rewriter,
+                        toLinearLayout(shape, blockedLayout)
+                            .transposeOuts(outDimsLogicalOrder),
+                        {
+                            {str_attr("register"), i32_val(0)},
+                            {str_attr("thread"), laneId},
+                            {str_attr("warp"), warpId},
+                            {str_attr("block"), i32_val(0)},
+                        });
+  assert(linearMultiDimBase.size() == rank);
+  for (unsigned k = 0; k < rank; ++k) {
+    assert(linearMultiDimBase[k].first == str_attr("dim" + std::to_string(k)));
+  }
+
+  return llvm::to_vector(llvm::make_second_range(linearMultiDimBase));
 }
 
 inline SmallVector<SmallVector<unsigned>>

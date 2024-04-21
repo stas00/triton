@@ -140,6 +140,35 @@ LLVM::LLVMFuncOp appendOrGetExternFuncOp(ConversionPatternRewriter &rewriter,
 }
 } // namespace triton::gpu
 
+SmallVector<std::pair<StringAttr, Value>>
+applyLinearLayout(Location loc, RewriterBase &rewriter,
+                  const LinearLayout &layout,
+                  ArrayRef<std::pair<StringAttr, Value>> indices) {
+  assert(layout.getNumInDims() == indices.size());
+  for (auto [inDimName, idx] : indices) {
+    assert(layout.hasInDim(inDimName) && "Invalid inDimName");
+  }
+
+  SmallVector<std::pair<StringAttr, Value>> outIndices;
+  for (auto outDimName : layout.getOutDimNames()) {
+    outIndices.push_back({outDimName, i32_val(0)});
+  }
+
+  for (auto [inDimName, idx] : indices) {
+    int nBits = layout.getInDimSizeLog2(inDimName);
+    for (int i = 0; i < nBits; i++) {
+      Value bit = and_(idx, i32_val(1 << i));
+      for (auto &[outDimName, outIdx] : outIndices) {
+        Value basis = i32_val(layout.getBasis(inDimName, outDimName, i));
+        outIdx =
+            xor_(outIdx, select(icmp_eq(bit, i32_val(0)), i32_val(0), basis));
+      }
+    }
+  }
+
+  return outIndices;
+}
+
 namespace LLVM {
 using namespace mlir::triton;
 using mlir::triton::gpu::getOrder;

@@ -22,6 +22,7 @@
  */
 
 #include "DumpLayout.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #ifdef AMD_TARGET
 #include "amd/lib/TritonAMDGPUToLLVM/TargetInfo.h"
 #include "amd/lib/TritonAMDGPUToLLVM/Utility.h"
@@ -175,6 +176,8 @@ int eval(Value value, int ctaid, int tid) {
   } else if (auto uremOp = llvm::dyn_cast<mlir::LLVM::URemOp>(op)) {
     return eval(uremOp.getLhs(), ctaid, tid) %
            eval(uremOp.getRhs(), ctaid, tid);
+  } else if (auto andOp = llvm::dyn_cast<mlir::LLVM::AndOp>(op)) {
+    return eval(andOp.getLhs(), ctaid, tid) & eval(andOp.getRhs(), ctaid, tid);
   } else if (auto xorOp = llvm::dyn_cast<mlir::LLVM::XOrOp>(op)) {
     return eval(xorOp.getLhs(), ctaid, tid) ^ eval(xorOp.getRhs(), ctaid, tid);
   } else if (auto trunciOp = llvm::dyn_cast<arith::TruncIOp>(op)) {
@@ -189,6 +192,18 @@ int eval(Value value, int ctaid, int tid) {
     return evalInlineAsmOp(asmOp, ctaid, tid);
   } else if (auto gepOp = llvm::dyn_cast<mlir::LLVM::GEPOp>(op)) {
     return evalGEPOp(gepOp, ctaid, tid);
+  } else if (auto selectOp = llvm::dyn_cast<mlir::LLVM::SelectOp>(op)) {
+    return eval(selectOp.getCondition(), ctaid, tid)
+               ? eval(selectOp.getTrueValue(), ctaid, tid)
+               : eval(selectOp.getFalseValue(), ctaid, tid);
+  } else if (auto icmpOp = llvm::dyn_cast<mlir::LLVM::ICmpOp>(op)) {
+    switch (icmpOp.getPredicate()) {
+    case mlir::LLVM::ICmpPredicate::eq:
+      return eval(icmpOp.getLhs(), ctaid, tid) ==
+             eval(icmpOp.getRhs(), ctaid, tid);
+    default:
+      llvm::report_fatal_error("Unsupported ICmp predicate");
+    }
   } else {
     llvm::report_fatal_error("Unrecognized op type in the index expression");
     return 0;

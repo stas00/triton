@@ -1,0 +1,35 @@
+// Conversions from TritonGPU layouts (e.g. BlockedEncodingAttr) to
+// LinearLayout.
+
+#include <optional>
+
+#include "triton/Tools/LinearLayout.h"
+
+namespace mlir::triton::gpu {
+
+// - BlockedEncodingAttrs have the following input dimensions.
+//
+//   "register": elements in one thread
+//   "thread": threads in a warp
+//   "warp": warps in a block/CTA
+//   "block": blocks in a cluster
+//
+// - An n-dimensional SharedEncodingAttr has the following input dimensions.
+//
+//   "dimi" for i in 0..n-1: the location in the n'th logical dimension of the
+//   input tensor.  These are not reordered according to the layout's `order`.
+//
+// All layouts have the following output dimensions.
+//
+//  "dimi" for i in 0..n-1: the location in the n'th logical dimension of the
+//  output tensor.  These *are* reordered according to the layout's `order`.
+//
+// You can flatten the input or output dimensions into a single dimension using
+// LinearLayout::flattenIns/Outs().
+//
+LinearLayout toLinearLayout(ArrayRef<int64_t> shape, Attribute layout);
+
+// TODO: Helpers to convert a flattened shared layout to vector loads of size n,
+// in banks of size k, etc.
+
+} // namespace mlir::triton::gpu
