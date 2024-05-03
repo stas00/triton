@@ -13,6 +13,7 @@
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Tools/LinearLayout.h"
+#include "triton/Tools/StrUtil.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -134,7 +135,7 @@ using namespace mlir::triton;
 // Attributes
 #define i32_arr_attr(...) rewriter.getI32ArrayAttr({__VA_ARGS__})
 #define i64_arr_attr(...) rewriter.getI64ArrayAttr({__VA_ARGS__})
-#define str_attr(str) rewriter.getStringAttr(str)
+#define str_attr(str) ::mlir::StringAttr::get(ctx, (str))
 
 namespace mlir {
 namespace triton {
@@ -482,6 +483,7 @@ emitBaseIndexWithinCTAForBlockedLayout(Location loc, RewriterBase &rewriter,
 inline SmallVector<SmallVector<unsigned>>
 emitOffsetForBlockedLayout(const BlockedEncodingAttr &blockedLayout,
                            RankedTensorType type) {
+  auto ctx = type.getContext();
   auto shape = type.getShape();
   auto sizePerThread = blockedLayout.getSizePerThread();
   auto threadsPerWarp = blockedLayout.getThreadsPerWarp();
@@ -510,9 +512,45 @@ emitOffsetForBlockedLayout(const BlockedEncodingAttr &blockedLayout,
           multiDimNanoTileId[k] *
               (sizePerThread[k] * threadsPerWarp[k] * warpsPerCTA[k]) +
           multiDimNanoTileElemId[k];
+      // reorderedMultiDimId %= shape[k]; // XXX is this correct?
       reorderedOffset[n].push_back(reorderedMultiDimId);
     }
   }
+
+  SmallVector<StringAttr> outDimsLogicalOrder;
+  for (unsigned k = 0; k < rank; ++k) {
+    outDimsLogicalOrder.push_back(str_attr("dim" + Twine(k)));
+  }
+
+#if 0
+  SmallVector<SmallVector<unsigned>> llOffsets;
+  LinearLayout ll =
+      toLinearLayout(shape, blockedLayout).transposeOuts(outDimsLogicalOrder);
+  assert(elemsPerThread == ll.getInDimSize(str_attr("register")));
+  for (unsigned i = 0; i < ll.getInDimSize(str_attr("register")); ++i) {
+    auto indices = llvm::make_second_range(ll.apply({{str_attr("register"), i},
+                                                     {str_attr("thread"), 0},
+                                                     {str_attr("warp"), 0},
+                                                     {str_attr("block"), 0}}));
+    SmallVector<unsigned> &offsets = llOffsets.emplace_back();
+    for (auto index : indices) {
+      offsets.push_back(index);
+    }
+  }
+  if (llOffsets != reorderedOffset) {
+    auto joinVec = [](const SmallVector<unsigned> &vec) {
+      return "[" + triton::join(vec, ", ") + "]";
+    };
+    llvm::errs() << "LL:\n" << ll;
+    llvm::errs() << "llOffsets: " << join(llOffsets, ", ", joinVec) << "\n";
+    llvm::errs() << "type: " << type << "\n";
+    llvm::errs() << "BlockedLayout: " << blockedLayout << "\n";
+    llvm::errs() << "reorderedOffset: " << join(reorderedOffset, ", ", joinVec)
+                 << "\n";
+  }
+  assert(llOffsets == reorderedOffset);
+#endif
+
   return reorderedOffset;
 }
 

@@ -18,6 +18,7 @@ namespace {
 using ::llvm::to_vector;
 using ::testing::ElementsAre;
 using ::testing::IsEmpty;
+using ::testing::Pair;
 
 using BasesT = LinearLayout::BasesT;
 
@@ -203,6 +204,19 @@ where out dims are: [c1, c2]
 )";
 
   EXPECT_EQ(actual, expected.substr(1));
+}
+
+TEST_F(LinearLayoutTest, Apply) {
+  LinearLayout layout = LinearLayout({
+      {S("in1"), {{S("out1"), {4, 2, 1}}, {S("out2"), {2, 1, 0}}}},
+      {S("in2"), {{S("out1"), {1, 2}}, {S("out2"), {2, 1}}}},
+  });
+  EXPECT_THAT(layout.apply({{S("in1"), 0}, {S("in2"), 0}}),
+              ElementsAre(Pair(S("out1"), 0), Pair(S("out2"), 0)));
+  EXPECT_THAT(layout.apply({{S("in2"), 0}, {S("in1"), 1}}),
+              ElementsAre(Pair(S("out1"), 4), Pair(S("out2"), 2)));
+  EXPECT_THAT(layout.apply({{S("in2"), 1}, {S("in1"), 0}}),
+              ElementsAre(Pair(S("out1"), 1), Pair(S("out2"), 2)));
 }
 
 } // anonymous namespace

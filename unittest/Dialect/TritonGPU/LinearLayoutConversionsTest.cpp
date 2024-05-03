@@ -124,5 +124,16 @@ TEST_F(LinearLayoutConversionsTest, ReversedOrder) {
       }));
 }
 
+TEST_F(LinearLayoutConversionsTest, ReplicateInRegisterDim) {
+  auto layout =
+      toLinearLayout({32}, blocked({2}, {4}, {1}, {1}, {1}, {0}, {0}));
+  EXPECT_EQ(layout, LinearLayout({
+                        {S("register"), {{S("dim0"), {1, 8, 16}}}},
+                        {S("thread"), {{S("dim0"), {2, 4}}}},
+                        {S("warp"), {{S("dim0"), {}}}},
+                        {S("block"), {{S("dim0"), {}}}},
+                    }));
+}
+
 } // anonymous namespace
 } // namespace mlir::triton::gpu

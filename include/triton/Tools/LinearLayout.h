@@ -467,6 +467,13 @@ public:
     return *this;
   }
 
+  // Computes and returns L(x, y, z).
+  //
+  // If you want to apply the layout to mlir Values instead of integers, that
+  // function lives in TritonGPUToLLVM/Utility.h.
+  SmallVector<std::pair<StringAttr, int32_t>>
+  apply(ArrayRef<std::pair<StringAttr, int32_t>> ins) const;
+
   // TODO(jlebar): Not yet implemented.
   // [[nodiscard]] LinearLayout
   // reshapeIns(std::vector<std::pair<StringAttr /*inDimName*/, int32_t

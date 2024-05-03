@@ -1,8 +1,10 @@
-#include "triton/Tools/LinearLayout.h"
+#include <vector>
+
 #include "mlir/IR/BuiltinAttributes.h"
+#include "triton/Tools/LinearLayout.h"
+#include "triton/Tools/StrUtil.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/MathExtras.h"
-#include <vector>
 
 namespace mlir::triton {
 
@@ -28,15 +30,7 @@ std::string stringifyBases(const BasesT &bases) {
   for (const auto &[inDim, outs] : bases) {
     ret += " - " + inDim.str() + "\n";
     for (const auto &[outDim, bs] : outs) {
-      ret += "   " + outDim.str() + ": [";
-      auto it = bs.begin();
-      if (it != bs.end()) {
-        ret += std::to_string(*it++);
-      }
-      for (; it != bs.end(); ++it) {
-        ret += ", " + std::to_string(*it);
-      }
-      ret += "]\n";
+      ret += "   " + outDim.str() + ": [" + join(bs) + "]\n";
     }
   }
   return ret;
@@ -305,6 +299,36 @@ LinearLayout operator*(LinearLayout inner, LinearLayout outer) {
   return LinearLayout(std::move(allBases));
 }
 
+SmallVector<std::pair<StringAttr, int32_t>>
+LinearLayout::apply(ArrayRef<std::pair<StringAttr, int32_t>> ins) const {
+  // `ins` must contain the same dimensions as getInDimNames(), modulo
+  // reordering.
+  auto insNames = llvm::make_first_range(ins);
+  llvm::DenseSet<StringAttr> argInDims(insNames.begin(), insNames.end());
+  llvm::DenseSet<StringAttr> thisInDims(getInDimNames().begin(),
+                                        getInDimNames().end());
+  if (argInDims != thisInDims) {
+    llvm::report_fatal_error(
+        Twine("Cannot apply layout.  The given input dimensions must match the "
+              "layout's input dimensions, modulo reordering, but they don't.") +
+        "\nGiven dims:" + join(insNames, ", ") +
+        "\nLayout's dims:" + join(getInDimNames(), ", "));
+  }
+
+  SmallVector<std::pair<StringAttr, int32_t>> ret;
+  for (StringAttr outDim : getOutDimNames()) {
+    int32_t outVal = 0;
+    for (auto &[inDim, val] : ins) {
+      for (int i = 0; i < getInDimSizeLog2(inDim); i++) {
+        if (val & (1 << i))
+          outVal ^= getBasis(inDim, outDim, i);
+      }
+    }
+    ret.push_back({outDim, outVal});
+  }
+  return ret;
+}
+
 bool operator==(LinearLayout lhs, LinearLayout rhs) {
   // llvm::MapVector doesn't have an operator== :(.
   if (lhs.bases.size() != rhs.bases.size())
@@ -337,35 +361,23 @@ std::string LinearLayout::toString() const {
 
   std::string ret;
   for (const auto &inDim : getInDimNames()) {
-    ret += " - ";
-    for (int i = inDim.str().size(); i < maxInDimNameLen; i++) {
-      ret += " ";
-    }
-    ret += inDim.str() + ": [";
-    for (int i = 0; i < getInDimSizeLog2(inDim); i++) {
-      if (i != 0) {
-        ret += ", ";
-      }
-
-      ret += "(";
-      for (const auto &[j, outDim] : llvm::enumerate(getOutDimNames())) {
-        if (j != 0) {
-          ret += ", ";
-        }
-        ret += std::to_string(getBasis(inDim, outDim, i));
-      }
-      ret += ")";
-    }
-    ret += "]\n";
+    ret +=
+        " - " + std::string(maxInDimNameLen - inDim.str().size(), ' ') +
+        inDim.str() + ": [" +
+        join(llvm::seq(getInDimSizeLog2(inDim)), ", ",
+             [&](int i) {
+               return "(" +
+                      join(getOutDimNames(), ", ",
+                           [&](StringAttr outDim) {
+                             return std::to_string(getBasis(inDim, outDim, i));
+                           }) +
+                      ")";
+             }) +
+        "]\n";
   }
-  ret += "where out dims are: [";
-  for (const auto &[i, outDim] : llvm::enumerate(getOutDimNames())) {
-    if (i != 0) {
-      ret += ", ";
-    }
-    ret += outDim.str();
-  }
-  ret += "]\n";
+  ret += "where out dims are: [" +
+         join(getOutDimNames(), ", ", [](StringAttr s) { return s.str(); }) +
+         "]\n";
   return ret;
 }
 
