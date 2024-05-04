@@ -209,8 +209,18 @@ private:
               dyn_cast<RankedTensorType>(op.getResult()[i].getType())) {
         auto resultLayout = cast<SliceEncodingAttr>(resultTy.getEncoding());
         unsigned resultElems = getTotalElemsPerThread(resultTy);
+        llvm::errs() << "XXX resultLayout: " << resultLayout << "\n";
+        llvm::errs() << "XXX resultTy: " << resultTy << "\n";
+        llvm::errs() << "XXX resultElems: " << resultElems << "\n";
         SmallVector<SmallVector<unsigned>> resultOffset =
             emitOffsetForLayout(resultLayout, resultTy);
+        llvm::errs() << "XXX resultOffset: "
+                     << triton::join(resultOffset, ", ",
+                                     [](llvm::raw_ostream &os, auto multiidx) {
+                                       os << "(" + triton::join(multiidx, ",") +
+                                                 " )";
+                                     })
+                     << "\n";
         SmallVector<Value> resultVals;
         for (int j = 0; j < resultElems; j++) {
           auto key = resultOffset[j];

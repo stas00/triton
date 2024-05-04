@@ -10,6 +10,7 @@
 #include "triton/Conversion/MLIRTypes.h"
 #include "triton/Conversion/TritonGPUToLLVM/TargetInfoBase.h"
 #include "triton/Dialect/Triton/IR/Utility.h"
+#include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
 #include "triton/Tools/LinearLayout.h"
@@ -512,44 +513,20 @@ emitOffsetForBlockedLayout(const BlockedEncodingAttr &blockedLayout,
           multiDimNanoTileId[k] *
               (sizePerThread[k] * threadsPerWarp[k] * warpsPerCTA[k]) +
           multiDimNanoTileElemId[k];
-      // reorderedMultiDimId %= shape[k]; // XXX is this correct?
+      // TODO(jlebar): This is not really correct.  For e.g. 1xf32 with 4
+      // elements per thread, we will emit offsets 0,1,2,3.  These then get
+      // added to the base offset without any modulo!
+      //
+      // But fixing this breaks other things.  For example, now
+      // emitOffsetsForSlicedLayout returns the wrong thing, because it's
+      // programmed to return only unique values.  If we correctly return
+      // 0,0,0,0 here, it will incorrectly dedup that to just 0.
+      //
+      // For now, we leave this broken.  The full linear layout conversion
+      // should let us fix this.
       reorderedOffset[n].push_back(reorderedMultiDimId);
     }
   }
-
-  SmallVector<StringAttr> outDimsLogicalOrder;
-  for (unsigned k = 0; k < rank; ++k) {
-    outDimsLogicalOrder.push_back(str_attr("dim" + Twine(k)));
-  }
-
-#if 0
-  SmallVector<SmallVector<unsigned>> llOffsets;
-  LinearLayout ll =
-      toLinearLayout(shape, blockedLayout).transposeOuts(outDimsLogicalOrder);
-  assert(elemsPerThread == ll.getInDimSize(str_attr("register")));
-  for (unsigned i = 0; i < ll.getInDimSize(str_attr("register")); ++i) {
-    auto indices = llvm::make_second_range(ll.apply({{str_attr("register"), i},
-                                                     {str_attr("thread"), 0},
-                                                     {str_attr("warp"), 0},
-                                                     {str_attr("block"), 0}}));
-    SmallVector<unsigned> &offsets = llOffsets.emplace_back();
-    for (auto index : indices) {
-      offsets.push_back(index);
-    }
-  }
-  if (llOffsets != reorderedOffset) {
-    auto joinVec = [](const SmallVector<unsigned> &vec) {
-      return "[" + triton::join(vec, ", ") + "]";
-    };
-    llvm::errs() << "LL:\n" << ll;
-    llvm::errs() << "llOffsets: " << join(llOffsets, ", ", joinVec) << "\n";
-    llvm::errs() << "type: " << type << "\n";
-    llvm::errs() << "BlockedLayout: " << blockedLayout << "\n";
-    llvm::errs() << "reorderedOffset: " << join(reorderedOffset, ", ", joinVec)
-                 << "\n";
-  }
-  assert(llOffsets == reorderedOffset);
-#endif
 
   return reorderedOffset;
 }
@@ -1035,10 +1012,10 @@ emitOffsetForSliceLayout(const SliceEncodingAttr &sliceLayout,
       uniqueOffsets.insert(offsets);
     }
   }
+  assert(resultOffsets.size() == triton::gpu::getTotalElemsPerThread(type) &&
+         "Mismatch between number of offsets and total elements per thread");
   return resultOffsets;
 }
-
-//
 
 // -----------------------------------------------------------------------
 // Get offsets / indices for any layout
@@ -1173,11 +1150,23 @@ emitOffsetForLayout(Attribute layout, RankedTensorType type) {
   llvm_unreachable("unsupported emitOffsetForLayout");
 }
 
+// Eventually this will become the only emitIndices function.
+std::optional<SmallVector<SmallVector<Value>>>
+emitIndicesUsingLinearLayouts(Location loc, RewriterBase &rewriter,
+                              const TargetInfoBase &target, Attribute layout,
+                              RankedTensorType type, bool withCTAOffset);
+
 // Emit indices calculation within each ConversionPattern, and returns a
 // [elemsPerThread X rank] index matrix.
 inline SmallVector<SmallVector<Value>>
 emitIndices(Location loc, RewriterBase &rewriter, const TargetInfoBase &target,
             Attribute layout, RankedTensorType type, bool withCTAOffset) {
+  std::optional<SmallVector<SmallVector<Value>>> llOffsets =
+      emitIndicesUsingLinearLayouts(loc, rewriter, target, layout, type,
+                                    withCTAOffset);
+  if (llOffsets.has_value())
+    return llOffsets.value();
+
   // step 1, delinearize threadId to get the base index
   auto multiDimBase = emitBaseIndexForLayout(loc, rewriter, target, layout,
                                              type, withCTAOffset);
