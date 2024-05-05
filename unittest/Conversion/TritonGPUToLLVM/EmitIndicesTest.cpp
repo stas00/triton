@@ -21,6 +21,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include "gtest/gtest.h"
 #include <fstream>
 #include <gtest/gtest.h>
 
@@ -32,6 +33,7 @@
 
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace mlir {
 namespace triton {
@@ -41,16 +43,22 @@ namespace gpu {
 // EmitIndicesTest
 //===----------------------------------------------------------------------===//
 
-class EmitIndicesTest : public ::testing::Test {
-public:
-  void SetUp() {
-    context.getOrLoadDialect<TritonGPUDialect>();
-    context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
-    context.getOrLoadDialect<mlir::gpu::GPUDialect>();
-    context.getOrLoadDialect<mlir::triton::nvgpu::NVGPUDialect>();
-  }
+MLIRContext *getContext() {
+  static MLIRContext *context = [] {
+    MLIRContext *context = new MLIRContext();
+    context->getOrLoadDialect<TritonGPUDialect>();
+    context->getOrLoadDialect<mlir::LLVM::LLVMDialect>();
+    context->getOrLoadDialect<mlir::gpu::GPUDialect>();
+    context->getOrLoadDialect<mlir::triton::nvgpu::NVGPUDialect>();
+    return context;
+  }();
+  return context;
+}
 
+class EmitIndicesTest : public ::testing::Test {
 protected:
+  EmitIndicesTest() : context(*getContext()) {}
+
   void runBlocked1dSingleCTA(int size, unsigned sizePerThread,
                              unsigned warpsPerCTA, const std::string &refStr) {
     // If we pass initializer lists to the constructor of BlockedEncodingAttr,
@@ -226,7 +234,7 @@ private:
   }
 
 protected:
-  MLIRContext context;
+  MLIRContext &context;
 };
 
 //===----------------------------------------------------------------------===//
@@ -724,16 +732,43 @@ TEST_F(EmitIndicesTest, LayoutVisualizer_Wmma) {
   ofs << dumpDistributedLayout(wmmaLayout, shape, /*multiCTA=*/false);
 }
 
-TEST_F(EmitIndicesTest, LegacyVsLinearLayouts) {
-  llvm::SmallVector<int64_t> shape = {128, 16};
-  auto CTALayout = CTALayoutAttr::get(
-      /*context=*/&context, /*CTAsPerCGA=*/{2, 2}, /*CTASplitNum=*/{2, 1},
-      /*CTAOrder=*/{1, 0});
-  auto blockedLayout = BlockedEncodingAttr::get(
-      /*context=*/&context, /*sizePerThread=*/{1, 4}, /*threadsPerWarp=*/{8, 4},
-      /*warpsPerCTA=*/{4, 1}, /*order=*/{1, 0}, /*CTALayout=*/CTALayout);
-  auto type =
-      RankedTensorType::get(shape, FloatType::getF16(&context), blockedLayout);
+struct BlockedLegacyVsLinearLayoutsTestParams {
+  std::vector<int64_t> shape;
+  std::vector<unsigned> sizePerThread;
+  std::vector<unsigned> threadsPerWarp;
+  std::vector<unsigned> warpsPerCTA;
+  std::vector<unsigned> order;
+  std::vector<unsigned> CTAsPerCGA;
+  std::vector<unsigned> CTASplitNum;
+  std::vector<unsigned> CTAOrder;
+
+  BlockedEncodingAttr getEncoding() const {
+    return BlockedEncodingAttr::get(
+        getContext(), sizePerThread, threadsPerWarp, warpsPerCTA, order,
+        CTALayoutAttr::get(getContext(), CTAsPerCGA, CTASplitNum, CTAOrder));
+  }
+};
+
+std::ostream &operator<<(std::ostream &os,
+                         const BlockedLegacyVsLinearLayoutsTestParams &params) {
+  std::string str;
+  llvm::raw_string_ostream llvm_os(str);
+  llvm_os << "shape=" << triton::join(params.shape, "x")
+          << ", encoding=" << params.getEncoding();
+  os << str;
+  return os;
+}
+
+class BlockedLegacyVsLinearLayoutsTest
+    : public EmitIndicesTest,
+      public ::testing::WithParamInterface<
+          BlockedLegacyVsLinearLayoutsTestParams> {};
+
+TEST_P(BlockedLegacyVsLinearLayoutsTest, DoIt) {
+  BlockedLegacyVsLinearLayoutsTestParams params = GetParam();
+  BlockedEncodingAttr blockedLayout = params.getEncoding();
+  auto type = RankedTensorType::get(params.shape, FloatType::getF16(&context),
+                                    blockedLayout);
 
   int numThreads = product(blockedLayout.getThreadsPerWarp()) *
                    product(blockedLayout.getWarpsPerCTA());
@@ -753,7 +788,7 @@ TEST_F(EmitIndicesTest, LegacyVsLinearLayouts) {
   auto llIndices = emitIndicesUsingLinearLayouts(
       loc, rewriter, target, blockedLayout, type, /*withCTAOffset=*/true);
   auto legacyIndices = emitIndices(loc, rewriter, target, blockedLayout, type,
-                                   /*withCTAOffset=*/true);
+                                   /*withCTAOffset=*/true, /*allowLL=*/false);
 
   ASSERT_TRUE(llIndices.has_value());
   ASSERT_EQ(llIndices->size(), legacyIndices.size());
@@ -773,6 +808,91 @@ TEST_F(EmitIndicesTest, LegacyVsLinearLayouts) {
     }
   }
 }
+
+INSTANTIATE_TEST_SUITE_P(
+    TestCases, BlockedLegacyVsLinearLayoutsTest,
+    ::testing::ValuesIn(std::vector<BlockedLegacyVsLinearLayoutsTestParams>({
+        {
+            .shape = {128, 16},
+            .sizePerThread = {1, 4},
+            .threadsPerWarp = {8, 4},
+            .warpsPerCTA = {4, 1},
+            .order = {1, 0},
+            .CTAsPerCGA = {2, 2},
+            .CTASplitNum = {2, 1},
+            .CTAOrder = {1, 0},
+        },
+        {
+            .shape = {1, 128},
+            .sizePerThread = {8, 1},
+            .threadsPerWarp = {8, 4},
+            .warpsPerCTA = {1, 4},
+            .order = {0, 1},
+            .CTAsPerCGA = {1, 2},
+            .CTASplitNum = {1, 2},
+            .CTAOrder = {1, 0},
+        },
+        {
+            .shape = {64, 1},
+            .sizePerThread = {8, 1},
+            .threadsPerWarp = {8, 4},
+            .warpsPerCTA = {1, 4},
+            .order = {0, 1},
+            .CTAsPerCGA = {1, 2},
+            .CTASplitNum = {1, 2},
+            .CTAOrder = {1, 0},
+        },
+        {
+            .shape = {128, 1},
+            .sizePerThread = {1, 8},
+            .threadsPerWarp = {4, 8},
+            .warpsPerCTA = {4, 1},
+            .order = {1, 0},
+            .CTAsPerCGA = {1, 2},
+            .CTASplitNum = {1, 1},
+            .CTAOrder = {1, 0},
+        },
+        {
+            .shape = {1, 64},
+            .sizePerThread = {1, 8},
+            .threadsPerWarp = {4, 8},
+            .warpsPerCTA = {4, 1},
+            .order = {1, 0},
+            .CTAsPerCGA = {1, 2},
+            .CTASplitNum = {1, 1},
+            .CTAOrder = {1, 0},
+        },
+        {
+            .shape = {128, 1},
+            .sizePerThread = {1, 1},
+            .threadsPerWarp = {1, 32},
+            .warpsPerCTA = {2, 2},
+            .order = {1, 0},
+            .CTAsPerCGA = {1, 2},
+            .CTASplitNum = {1, 2},
+            .CTAOrder = {1, 0},
+        },
+        {
+            .shape = {1, 128},
+            .sizePerThread = {1, 1},
+            .threadsPerWarp = {1, 32},
+            .warpsPerCTA = {2, 2},
+            .order = {1, 0},
+            .CTAsPerCGA = {1, 2},
+            .CTASplitNum = {1, 2},
+            .CTAOrder = {1, 0},
+        },
+        {
+            .shape = {1},
+            .sizePerThread = {1},
+            .threadsPerWarp = {32},
+            .warpsPerCTA = {4},
+            .order = {0},
+            .CTAsPerCGA = {2},
+            .CTASplitNum = {2},
+            .CTAOrder = {0},
+        },
+    })));
 
 } // namespace gpu
 } // namespace triton

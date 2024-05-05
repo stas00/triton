@@ -301,8 +301,6 @@ namespace mlir::triton {
 // Like CuTe layouts, LLs are also programmable and composible.  But there are
 // also some differences.
 //
-//  - CuTe layouts are MD -> 1D, whereas LLs are MD -> ND.  This is only a UI
-//    difference, because an MD -> 1D layout can be "unstacked" into MD -> ND.
 //  - Dimensions in LLs are named; CuTe dimensions are numbered.
 //  - CuTe layouts can be nested; LLs cannot be.  (Nesting doesn't give CuTe
 //    layouts additional power; any nested layout can be flattened.)

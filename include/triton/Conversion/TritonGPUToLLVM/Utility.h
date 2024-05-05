@@ -444,10 +444,9 @@ applyLinearLayout(Location loc, RewriterBase &rewriter,
                   ArrayRef<std::pair<StringAttr, Value>> indices);
 
 // Get an index-base for each dimension for a \param blockedLayout.
-inline SmallVector<Value>
-emitBaseIndexWithinCTAForBlockedLayout(Location loc, RewriterBase &rewriter,
-                                       const BlockedEncodingAttr &blockedLayout,
-                                       RankedTensorType type) {
+inline SmallVector<Value> emitBaseIndexWithinCTAForBlockedLayoutUsingLL(
+    Location loc, RewriterBase &rewriter,
+    const BlockedEncodingAttr &blockedLayout, RankedTensorType type) {
   MLIRContext *ctx = rewriter.getContext();
   auto shape = type.getShape();
   Value threadId = getThreadId(rewriter, loc);
@@ -479,6 +478,50 @@ emitBaseIndexWithinCTAForBlockedLayout(Location loc, RewriterBase &rewriter,
   }
 
   return llvm::to_vector(llvm::make_second_range(linearMultiDimBase));
+}
+
+inline SmallVector<Value>
+emitBaseIndexWithinCTAForBlockedLayout(Location loc, RewriterBase &rewriter,
+                                       const BlockedEncodingAttr &blockedLayout,
+                                       RankedTensorType type) {
+  MLIRContext *ctx = rewriter.getContext();
+  auto shape = type.getShape();
+  Value threadId = getThreadId(rewriter, loc);
+  Value warpSize = i32_val(triton::gpu::getWarpSize(blockedLayout));
+  Value laneId = urem(threadId, warpSize);
+  Value warpId = udiv(threadId, warpSize);
+  auto sizePerThread = blockedLayout.getSizePerThread();
+  auto threadsPerWarp = blockedLayout.getThreadsPerWarp();
+  auto warpsPerCTA = blockedLayout.getWarpsPerCTA();
+  auto order = blockedLayout.getOrder();
+  auto shapePerCTA = triton::gpu::getShapePerCTA(blockedLayout, shape);
+  unsigned rank = shape.size();
+
+  // delinearize threadId to get the base index
+  SmallVector<Value> multiDimWarpId =
+      delinearize(rewriter, loc, warpId, warpsPerCTA, order);
+  SmallVector<Value> multiDimThreadId =
+      delinearize(rewriter, loc, laneId, threadsPerWarp, order);
+
+  SmallVector<Value> multiDimBase(rank);
+  for (unsigned k = 0; k < rank; ++k) {
+    // Wrap around multiDimWarpId/multiDimThreadId in case
+    // shapePerCTATile[k] > shapePerCTA[k]
+    auto maxWarps =
+        ceil<unsigned>(shapePerCTA[k], sizePerThread[k] * threadsPerWarp[k]);
+    auto maxThreads = ceil<unsigned>(shapePerCTA[k], sizePerThread[k]);
+    multiDimWarpId[k] = urem(multiDimWarpId[k], i32_val(maxWarps));
+    multiDimThreadId[k] = urem(multiDimThreadId[k], i32_val(maxThreads));
+    // multiDimBase[k] = (multiDimThreadId[k] +
+    //                    multiDimWarpId[k] * threadsPerWarp[k]) *
+    //                   sizePerThread[k];
+    Value threadsPerWarpK = i32_val(threadsPerWarp[k]);
+    Value sizePerThreadK = i32_val(sizePerThread[k]);
+    multiDimBase[k] =
+        mul(sizePerThreadK,
+            add(multiDimThreadId[k], mul(multiDimWarpId[k], threadsPerWarpK)));
+  }
+  return multiDimBase;
 }
 
 inline SmallVector<SmallVector<unsigned>>
@@ -1160,7 +1203,8 @@ emitIndicesUsingLinearLayouts(Location loc, RewriterBase &rewriter,
 // [elemsPerThread X rank] index matrix.
 inline SmallVector<SmallVector<Value>>
 emitIndices(Location loc, RewriterBase &rewriter, const TargetInfoBase &target,
-            Attribute layout, RankedTensorType type, bool withCTAOffset) {
+            Attribute layout, RankedTensorType type, bool withCTAOffset,
+            bool allowLL = true) {
   // step 1, delinearize threadId to get the base index
   auto multiDimBase = emitBaseIndexForLayout(loc, rewriter, target, layout,
                                              type, withCTAOffset);
@@ -1181,6 +1225,9 @@ emitIndices(Location loc, RewriterBase &rewriter, const TargetInfoBase &target,
   std::optional<SmallVector<SmallVector<Value>>> llOffsets =
       emitIndicesUsingLinearLayouts(loc, rewriter, target, layout, type,
                                     withCTAOffset);
+
+  if (llOffsets.has_value() && allowLL)
+    return *llOffsets;
 
   return multiDimIdx;
 }
