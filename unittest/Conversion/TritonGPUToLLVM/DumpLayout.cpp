@@ -23,6 +23,7 @@
 
 #include "DumpLayout.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "nvidia/include/Dialect/NVGPU/IR/Dialect.h"
 #ifdef AMD_TARGET
 #include "amd/lib/TritonAMDGPUToLLVM/TargetInfo.h"
 #include "amd/lib/TritonAMDGPUToLLVM/Utility.h"
@@ -188,6 +189,9 @@ int eval(Value value, int ctaid, int tid) {
     return eval(castOp.getOperand(0), ctaid, tid);
   } else if (auto threadOp = llvm::dyn_cast<mlir::gpu::ThreadIdOp>(op)) {
     return evalThreadIdOp(threadOp, ctaid, tid);
+  } else if (auto ctaIdOp =
+                 llvm::dyn_cast<mlir::triton::nvgpu::ClusterCTAIdOp>(op)) {
+    return ctaid;
   } else if (auto asmOp = llvm::dyn_cast<mlir::LLVM::InlineAsmOp>(op)) {
     return evalInlineAsmOp(asmOp, ctaid, tid);
   } else if (auto gepOp = llvm::dyn_cast<mlir::LLVM::GEPOp>(op)) {
@@ -205,12 +209,17 @@ int eval(Value value, int ctaid, int tid) {
       llvm::report_fatal_error("Unsupported ICmp predicate");
     }
   } else {
+    llvm::errs() << "Unrecognized op: " << *op << "\n";
     llvm::report_fatal_error("Unrecognized op type in the index expression");
     return 0;
   }
 }
 
 } // namespace
+
+int evalValue(Value value, int ctaid, int tid) {
+  return eval(value, ctaid, tid);
+}
 
 //===----------------------------------------------------------------------===//
 // Dump Distributed Layout

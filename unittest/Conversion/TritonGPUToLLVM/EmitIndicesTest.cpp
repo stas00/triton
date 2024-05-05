@@ -21,13 +21,17 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-#include "mlir/Dialect/GPU/IR/GPUDialect.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-
-#include "DumpLayout.h"
-
 #include <fstream>
 #include <gtest/gtest.h>
+
+#include "DumpLayout.h"
+#include "nvidia/include/Dialect/NVGPU/IR/Dialect.h"
+#include "nvidia/lib/TritonNVIDIAGPUToLLVM/TargetInfo.h"
+#include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
+
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 
 namespace mlir {
 namespace triton {
@@ -43,6 +47,7 @@ public:
     context.getOrLoadDialect<TritonGPUDialect>();
     context.getOrLoadDialect<mlir::LLVM::LLVMDialect>();
     context.getOrLoadDialect<mlir::gpu::GPUDialect>();
+    context.getOrLoadDialect<mlir::triton::nvgpu::NVGPUDialect>();
   }
 
 protected:
@@ -717,6 +722,56 @@ TEST_F(EmitIndicesTest, LayoutVisualizer_Wmma) {
 
   std::ofstream ofs("WmmaLayout.csv");
   ofs << dumpDistributedLayout(wmmaLayout, shape, /*multiCTA=*/false);
+}
+
+TEST_F(EmitIndicesTest, LegacyVsLinearLayouts) {
+  llvm::SmallVector<int64_t> shape = {128, 16};
+  auto CTALayout = CTALayoutAttr::get(
+      /*context=*/&context, /*CTAsPerCGA=*/{2, 2}, /*CTASplitNum=*/{2, 1},
+      /*CTAOrder=*/{1, 0});
+  auto blockedLayout = BlockedEncodingAttr::get(
+      /*context=*/&context, /*sizePerThread=*/{1, 4}, /*threadsPerWarp=*/{8, 4},
+      /*warpsPerCTA=*/{4, 1}, /*order=*/{1, 0}, /*CTALayout=*/CTALayout);
+  auto type =
+      RankedTensorType::get(shape, FloatType::getF16(&context), blockedLayout);
+
+  int numThreads = product(blockedLayout.getThreadsPerWarp()) *
+                   product(blockedLayout.getWarpsPerCTA());
+  int numCTAs = product(blockedLayout.getCTAsPerCGA());
+
+  mlir::OpBuilder builder(&context);
+  Location loc = UnknownLoc::get(&context);
+  auto mlirModule = mlir::ModuleOp::create(loc);
+  auto func = builder.create<mlir::triton::FuncOp>(
+      loc, "test_func", builder.getFunctionType({}, {}));
+  mlirModule.push_back(func);
+  auto *block = func.addEntryBlock();
+  IRRewriter rewriter(&context);
+  rewriter.setInsertionPointToStart(block);
+
+  NVIDIA::TargetInfo target(90);
+  auto llIndices = emitIndicesUsingLinearLayouts(
+      loc, rewriter, target, blockedLayout, type, /*withCTAOffset=*/true);
+  auto legacyIndices = emitIndices(loc, rewriter, target, blockedLayout, type,
+                                   /*withCTAOffset=*/true);
+
+  ASSERT_TRUE(llIndices.has_value());
+  ASSERT_EQ(llIndices->size(), legacyIndices.size());
+  for (int i = 0; i < llIndices->size(); ++i) {
+    SCOPED_TRACE("Index " + std::to_string(i));
+    ASSERT_EQ((*llIndices)[i].size(), legacyIndices[i].size());
+    for (int j = 0; j < (*llIndices)[i].size(); ++j) {
+      SCOPED_TRACE("Subindex " + std::to_string(j));
+      for (int ctaId = 0; ctaId < numCTAs; ++ctaId) {
+        SCOPED_TRACE("CTA " + std::to_string(ctaId));
+        for (int tid = 0; tid < numThreads; ++tid) {
+          SCOPED_TRACE("Thread " + std::to_string(tid));
+          EXPECT_EQ(evalValue((*llIndices)[i][j], ctaId, tid),
+                    evalValue(legacyIndices[i][j], ctaId, tid));
+        }
+      }
+    }
+  }
 }
 
 } // namespace gpu

@@ -1,10 +1,10 @@
-#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
-#include "triton/Dialect/Triton/IR/Utility.h"
+#include <vector>
+
 #include "triton/Dialect/TritonGPU/IR/Attributes.h"
+#include "triton/Dialect/TritonGPU/IR/LinearLayoutConversions.h"
+#include "triton/Tools/StrUtil.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/MathExtras.h"
-#include <numeric>
 
 namespace mlir::triton::gpu {
 namespace {
@@ -57,35 +57,77 @@ LinearLayout blockedToLinearLayout(ArrayRef<int64_t> shape,
         shapeRemaining[dim] = 0;
       }
 
-      // TODO: Can I add the zeros after the fact?
       ret *= LinearLayout::identity1D(size, inDimName, outDimNames[dim]) *
              LinearLayout::zeros1D(zeros, inDimName, outDimNames[dim]);
     }
     return ret;
   };
 
-  // First the shape is split into CTASplitNum pieces, which are distributed
-  // among the NumCTAs in the CTG.  Then it's distributed among the threads in
-  // the block.
-  LinearLayout ctgLayout =
-      layoutForDim(kBlock, blocked.getCTASplitNum(), blocked.getCTAOrder());
+  // XXX Make this less copy-paste-y.
+  auto layoutForBlock = [&] {
+    LinearLayout ret = LinearLayout::empty();
+    const auto &order = blocked.getCTAOrder();
+    const auto &sizes = blocked.getCTASplitNum();
+    const auto &CTAsPerCGA = blocked.getCTAsPerCGA();
 
-  // CTASplitNum[i] != CTAsPerCGA[i] means we duplicate the layout along
-  // dimension i so that there are CTAsPerCGA[i] / CTASplitNum[i] copies.
-  for (int i = 0; i < rank; i++) {
-    int dim = blocked.getCTAOrder()[i];
-    unsigned splitNum = blocked.getCTASplitNum()[dim];
-    unsigned CTAsPerCGA = blocked.getCTAsPerCGA()[dim];
-    assert(CTAsPerCGA % splitNum == 0);
-    ctgLayout *=
-        LinearLayout::zeros1D(CTAsPerCGA / splitNum, kBlock, outDimNames[dim]);
-  }
+    // Start with the most minor dimension, which is order[0].
+    for (int i = 0; i < rank; i++) {
+      int dim = order[i];
 
-  // Now split the shape among the register+thread+warp.
+      int32_t size, zeros;
+      if (shapeRemaining[dim] >= sizes[dim]) {
+        size = sizes[dim];
+        zeros = 0;
+        shapeRemaining[dim] /= sizes[dim];
+      } else {
+        size = shapeRemaining[dim];
+        zeros = size > 0 ? sizes[dim] / size : sizes[dim];
+        shapeRemaining[dim] = 0;
+      }
+
+      assert(CTAsPerCGA[dim] % sizes[dim] == 0);
+
+      ret *= LinearLayout::identity1D(size, kBlock, outDimNames[dim]) *
+             LinearLayout::zeros1D(zeros, kBlock, outDimNames[dim]) *
+             LinearLayout::zeros1D(CTAsPerCGA[dim] / sizes[dim], kBlock,
+                                   outDimNames[dim]);
+    }
+    return ret;
+  };
+
+  // Split the shape among the register+thread+warp.
   LinearLayout ctaLayout =
       layoutForDim(kRegister, blocked.getSizePerThread(), blocked.getOrder()) *
       layoutForDim(kThread, blocked.getThreadsPerWarp(), blocked.getOrder()) *
       layoutForDim(kWarp, blocked.getWarpsPerCTA(), blocked.getOrder());
+
+  // XXX update comment.
+  // First the shape is split into CTASplitNum pieces, which are distributed
+  // among the NumCTAs in the CTG.  Then it's distributed among the threads in
+  // the block.
+  LinearLayout ctgLayout = layoutForBlock();
+  llvm::errs() << "XXX ctgLayout:\n" << ctgLayout << "\n";
+
+  // If the shape per CTA is larger than the layout, we repeat the layout by
+  // having each thread hold multiple elements, i.e. adding to the register
+  // dimension.  This happens *before* we multiply the CTG, so CTG repetition is
+  // always the most-major step.
+  //
+  // The `block` dimension is always more major than the repeats.  That is, we
+  // repeat enough so that then when we tack on the multi-block dimension, we
+  // fill the shape exactly.
+  for (int i = 0; i < rank; i++) {
+    int dim = blocked.getOrder()[i];
+    int32_t layoutSize = ctaLayout.getOutDimSize(outDimNames[dim]);
+
+    int32_t shapeSize = shape[dim] / ctgLayout.getOutDimSize(outDimNames[dim]);
+    if (shapeSize <= layoutSize) {
+      continue;
+    }
+    assert(shapeSize % layoutSize == 0);
+    ctaLayout *= LinearLayout::identity1D(shapeSize / layoutSize, kRegister,
+                                          outDimNames[dim]);
+  }
 
   // Join the layouts, with the CTG layout being more minor and its being
   // transposed to match the order of the CTA layout.  (You can't multiply two
@@ -94,28 +136,15 @@ LinearLayout blockedToLinearLayout(ArrayRef<int64_t> shape,
       ctaLayout *
       ctgLayout.transposeOuts(llvm::to_vector(ctaLayout.getOutDimNames()));
 
-  // If the shape per CTA is larger than the layout, we repeat the layout by
-  // having each thread hold multiple elements, i.e. adding to the register
-  // dimension.  (In a way, this means `register` is both the most minor and
-  // most major input dimension of the layout within the block.)
-  //
-  // The `block` dimension is always more major than the repeats.  That is, we
-  // repeat enough so that then when we tack on the multi-block dimension, we
-  // fill the shape exactly.
   for (int i = 0; i < rank; i++) {
-    int dim = blocked.getOrder()[i];
-    int32_t layoutSize = ret.getOutDimSize(outDimNames[dim]);
-
-    // Note we divide by getCTASplitNum(), not getCTASPerCGA.  CTASplitNum[i]
-    // tells us how many unique copies of the reg+thread+warp layout there are
-    // in the CGA.  This is broadcasted to the CTAsPerCGA[i] CTAs in the block.
-    int32_t shapeSize = shape[dim] / blocked.getCTASplitNum()[dim];
-    if (shapeSize <= layoutSize) {
-      continue;
+    if (ret.getOutDimSize(outDimNames[i]) != shape[i]) {
+      llvm::errs() << "Bug in blockedToLinearLayout; wrong output sizes\n";
+      llvm::errs() << "input shape: " << triton::join(shape, ",") << "\n";
+      llvm::errs() << "input layout: " << blocked << "\n";
+      llvm::errs() << "output linear layout:\n" << ret << "\n";
+      llvm::report_fatal_error(
+          "Bug in blockedToLinearLayout; wrong output sizes.");
     }
-    assert(shapeSize % layoutSize == 0);
-    ret *= LinearLayout::identity1D(shapeSize / layoutSize, kRegister,
-                                    outDimNames[dim]);
   }
 
   return ret;

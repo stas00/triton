@@ -1161,12 +1161,6 @@ emitIndicesUsingLinearLayouts(Location loc, RewriterBase &rewriter,
 inline SmallVector<SmallVector<Value>>
 emitIndices(Location loc, RewriterBase &rewriter, const TargetInfoBase &target,
             Attribute layout, RankedTensorType type, bool withCTAOffset) {
-  std::optional<SmallVector<SmallVector<Value>>> llOffsets =
-      emitIndicesUsingLinearLayouts(loc, rewriter, target, layout, type,
-                                    withCTAOffset);
-  if (llOffsets.has_value())
-    return llOffsets.value();
-
   // step 1, delinearize threadId to get the base index
   auto multiDimBase = emitBaseIndexForLayout(loc, rewriter, target, layout,
                                              type, withCTAOffset);
@@ -1183,6 +1177,11 @@ emitIndices(Location loc, RewriterBase &rewriter, const TargetInfoBase &target,
   for (unsigned n = 0; n < elemsPerThread; ++n)
     for (unsigned k = 0; k < rank; ++k)
       multiDimIdx[n][k] = add(multiDimBase[k], i32_val(offset[n][k]));
+
+  std::optional<SmallVector<SmallVector<Value>>> llOffsets =
+      emitIndicesUsingLinearLayouts(loc, rewriter, target, layout, type,
+                                    withCTAOffset);
+
   return multiDimIdx;
 }
 

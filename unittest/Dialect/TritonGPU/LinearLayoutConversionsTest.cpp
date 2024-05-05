@@ -64,11 +64,11 @@ TEST_F(LinearLayoutConversionsTest, CTABroadcast) {
       layout,
       LinearLayout({
           {S("register"),
-           {{S("dim0"), {1, 2, 4, 0}}, {S("dim1"), {0, 0, 0, 32}}}},
+           {{S("dim0"), {1, 2, 4, 0, 0}}, {S("dim1"), {0, 0, 0, 16, 32}}}},
           {S("thread"),
            {{S("dim0"), {8, 16, 32, 0, 0}}, {S("dim1"), {0, 0, 0, 1, 2}}}},
           {S("warp"), {{S("dim0"), {0, 0}}, {S("dim1"), {4, 8}}}},
-          {S("block"), {{S("dim0"), {0}}, {S("dim1"), {16}}}},
+          {S("block"), {{S("dim0"), {0}}, {S("dim1"), {64}}}},
       }));
 }
 
@@ -133,6 +133,34 @@ TEST_F(LinearLayoutConversionsTest, ReplicateInRegisterDim) {
                         {S("warp"), {{S("dim0"), {}}}},
                         {S("block"), {{S("dim0"), {}}}},
                     }));
+}
+
+TEST_F(LinearLayoutConversionsTest, TooLargeOneDimTooSmallAnother) {
+  auto blockedLayout =
+      blocked({1, 4}, {8, 4}, {4, 1}, {2, 2}, {2, 1}, {1, 0}, {1, 0});
+  auto ll = toLinearLayout({128, 16}, blockedLayout);
+  EXPECT_EQ(ll, LinearLayout({
+                    {S("register"),
+                     {
+                         {S("dim1"), {1, 2, 0}},
+                         {S("dim0"), {0, 0, 32}},
+                     }},
+                    {S("thread"),
+                     {
+                         {S("dim1"), {4, 8, 0, 0, 0}},
+                         {S("dim0"), {0, 0, 1, 2, 4}},
+                     }},
+                    {S("warp"),
+                     {
+                         {S("dim1"), {0, 0}},
+                         {S("dim0"), {8, 16}},
+                     }},
+                    {S("block"),
+                     {
+                         {S("dim1"), {0, 0}},
+                         {S("dim0"), {0, 64}},
+                     }},
+                }));
 }
 
 } // anonymous namespace
