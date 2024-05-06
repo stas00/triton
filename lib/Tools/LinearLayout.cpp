@@ -348,7 +348,7 @@ bool operator==(LinearLayout lhs, LinearLayout rhs) {
 
 std::string LinearLayout::toString() const {
   // We could use stringifyBases here, but now that we know the layout is valid,
-  // we can create something more compact.
+  // we can create something nicer.
   if (bases.empty())
     return "(empty layout)\n";
 
@@ -362,18 +362,17 @@ std::string LinearLayout::toString() const {
   std::string ret;
   for (const auto &inDim : getInDimNames()) {
     ret +=
-        " - " + std::string(maxInDimNameLen - inDim.str().size(), ' ') +
-        inDim.str() + ": [" +
-        join(llvm::seq(getInDimSizeLog2(inDim)), ", ",
+        " - " +
+        join(llvm::seq(getInDimSizeLog2(inDim)), "\n   ",
              [&](int i) {
-               return "(" +
+               return inDim.str() + "=" + std::to_string(1 << i) + " -> (" +
                       join(getOutDimNames(), ", ",
                            [&](StringAttr outDim) {
                              return std::to_string(getBasis(inDim, outDim, i));
                            }) +
                       ")";
              }) +
-        "]\n";
+        "\n";
   }
   ret += "where out dims are: [" +
          join(getOutDimNames(), ", ", [](StringAttr s) { return s.str(); }) +

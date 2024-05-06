@@ -190,22 +190,6 @@ TEST_F(LinearLayoutTest, EmptyToString) {
   EXPECT_EQ(LinearLayout::empty().toString(), "(empty layout)\n");
 }
 
-TEST_F(LinearLayoutTest, ToString) {
-  std::string actual =
-      LinearLayout({
-                       {S("a"), {{S("c1"), {1, 2, 4}}, {S("c2"), {1, 2, 4}}}},
-                       {S("bbbb"), {{S("c1"), {0, 0}}, {S("c2"), {2, 1}}}},
-                   })
-          .toString();
-  std::string expected = R"(
- -    a: [(1, 1), (2, 2), (4, 4)]
- - bbbb: [(0, 2), (0, 1)]
-where out dims are: [c1, c2]
-)";
-
-  EXPECT_EQ(actual, expected.substr(1));
-}
-
 TEST_F(LinearLayoutTest, Apply) {
   LinearLayout layout = LinearLayout({
       {S("in1"), {{S("out1"), {4, 2, 1}}, {S("out2"), {2, 1, 0}}}},

@@ -95,18 +95,20 @@ LinearLayout blockedToLinearLayout(ArrayRef<int64_t> shape,
     return ret;
   };
 
-  // Split the shape among the register+thread+warp.
-  LinearLayout ctaLayout =
-      layoutForDim(kRegister, blocked.getSizePerThread(), blocked.getOrder()) *
-      layoutForDim(kThread, blocked.getThreadsPerWarp(), blocked.getOrder()) *
-      layoutForDim(kWarp, blocked.getWarpsPerCTA(), blocked.getOrder());
-
-  // XXX update comment.
+  // XXX When I move this below ctaLayout, the hopper tests fail.  Fine.  But
+  // none of the C++ tests fail!
+  //
   // First the shape is split into CTASplitNum pieces, which are distributed
   // among the NumCTAs in the CTG.  Then it's distributed among the threads in
   // the block.
   LinearLayout ctgLayout = layoutForBlock();
   llvm::errs() << "XXX ctgLayout:\n" << ctgLayout << "\n";
+
+  // Split the shape among the register+thread+warp.
+  LinearLayout ctaLayout =
+      layoutForDim(kRegister, blocked.getSizePerThread(), blocked.getOrder()) *
+      layoutForDim(kThread, blocked.getThreadsPerWarp(), blocked.getOrder()) *
+      layoutForDim(kWarp, blocked.getWarpsPerCTA(), blocked.getOrder());
 
   // If the shape per CTA is larger than the layout, we repeat the layout by
   // having each thread hold multiple elements, i.e. adding to the register

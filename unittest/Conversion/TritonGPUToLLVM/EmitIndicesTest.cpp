@@ -790,22 +790,58 @@ TEST_P(BlockedLegacyVsLinearLayoutsTest, DoIt) {
   auto legacyIndices = emitIndices(loc, rewriter, target, blockedLayout, type,
                                    /*withCTAOffset=*/true, /*allowLL=*/false);
 
-  ASSERT_TRUE(llIndices.has_value());
-  ASSERT_EQ(llIndices->size(), legacyIndices.size());
-  for (int i = 0; i < llIndices->size(); ++i) {
-    SCOPED_TRACE("Index " + std::to_string(i));
-    ASSERT_EQ((*llIndices)[i].size(), legacyIndices[i].size());
-    for (int j = 0; j < (*llIndices)[i].size(); ++j) {
-      SCOPED_TRACE("Subindex " + std::to_string(j));
-      for (int ctaId = 0; ctaId < numCTAs; ++ctaId) {
-        SCOPED_TRACE("CTA " + std::to_string(ctaId));
-        for (int tid = 0; tid < numThreads; ++tid) {
-          SCOPED_TRACE("Thread " + std::to_string(tid));
-          EXPECT_EQ(evalValue((*llIndices)[i][j], ctaId, tid),
-                    evalValue(legacyIndices[i][j], ctaId, tid));
-        }
+  // This test takes a long time if we check all indices.  But for linear
+  // layouts, we really should only need to check powers of 2.  We wrap the
+  // loops in this `iterate` function so we can easily change between checking
+  // all indices and just the powers of 2.
+  constexpr bool checkAllElems = false;
+  bool stopIterating = false;
+  auto iterate = [&](int n, auto fn) {
+    if (checkAllElems) {
+      for (int i = 0; i < n && !stopIterating; i++) {
+        fn(i);
+      }
+    } else {
+      if (n > 0) {
+        fn(0);
+      }
+      for (int i = 0; (1 << i) < n && !stopIterating; i++) {
+        fn(1 << i);
       }
     }
+  };
+
+  constexpr int kMaxFailures = 1024;
+  int64_t numFailures = 0;
+  ASSERT_TRUE(llIndices.has_value());
+  ASSERT_EQ(llIndices->size(), legacyIndices.size());
+  iterate(llIndices->size(), [&](int i) {
+    SCOPED_TRACE("Register " + std::to_string(i));
+    ASSERT_EQ((*llIndices)[i].size(), legacyIndices[i].size());
+    iterate((*llIndices)[i].size(), [&](int j) {
+      SCOPED_TRACE("Dimension " + std::to_string(j));
+      iterate(numCTAs, [&](int ctaId) {
+        SCOPED_TRACE("CTA " + std::to_string(ctaId));
+        iterate(numThreads, [&](int tid) {
+          SCOPED_TRACE("Thread " + std::to_string(tid));
+          int llValue = evalValue((*llIndices)[i][j], ctaId, tid);
+          int legacyValue = evalValue(legacyIndices[i][j], ctaId, tid);
+          EXPECT_EQ(llValue, legacyValue);
+          if (llValue != legacyValue) {
+            ++numFailures;
+          }
+          if (numFailures > kMaxFailures) {
+            llvm::errs() << "Too many failures, aborting\n";
+            stopIterating = true;
+          }
+        });
+      });
+    });
+  });
+
+  if (numFailures > 0) {
+    llvm::errs() << "Linear layout:\n"
+                 << toLinearLayout(params.shape, params.getEncoding());
   }
 }
 

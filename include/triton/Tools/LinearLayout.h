@@ -23,12 +23,13 @@ namespace mlir::triton {
 // For example, suppose we have a 2D tensor T stored in GPU registers.  T's
 // layout is the function that, given a "hardware location" tuple of (thread-id,
 // warp-id), returns an index (x,y) into T.  In other words, if L(t,w) = (x,y)
-// is our linear layout func, then thread t in warp w contains the value T[x,y].
+// is our linear layout func, then a register in thread t in warp w contains the
+// value T[x,y].
 //
 // The key fact about LLs is, the mapping from (t,w) to (x,y) is not arbitrary.
 // We only need to specify the value of L(t,w) at certain special points
-// (namely, the values L(t,0) and L(0,w) where t/w are powers of 2), and from
-// those we can compute all the other values of L.
+// (namely, the values L(t,0) and L(0,w) where t and w are powers of 2), and
+// from those we can compute all the other values of L.
 //
 // Here's an example LL where we have 4 warps and 4 threads per warp, and the
 // tensor T has shape 4x4.  We define the function L by choosing the values of
@@ -66,9 +67,9 @@ namespace mlir::triton {
 //              2  (2,2) (2,3) (2,0) (2,1)
 //              3  (3,3) (3,2) (3,1) (3,0).
 //
-// Careful readers will recognize this as a classic "swizzled" layout where (t,
-// w) -> (t, w ⊕ t).  To go from this formula to an LL, you only need to compute
-// the results at input points (0,1), (0,2), (1,0), and (2,0).
+// Careful readers will recognize this as a classic "swizzled" layout where
+// (t, w) -> (t, w ⊕ t).  To go from this formula to an LL, you only need to
+// compute the results at input points (0,1), (0,2), (1,0), and (2,0).
 
 // Indeed the whole point of LLs is that they allow us to specify transposed and
 // swizzled layouts as a "general case".  Instead of a layout class for
@@ -248,8 +249,8 @@ namespace mlir::triton {
 //                          | 1 |
 //
 // This works, but it's cumbersome.  It's more compact to think of the vector
-// `a` as an M-bit unsigned integer, and each column Bi of the matrix B as an
-// N-bit integer.  Here's the same matrix-vector product written this way.
+// `a` as an M-bit integer, and each column Bi of the matrix B as an N-bit
+// integer.  Here's the same matrix-vector product written this way.
 //
 //   = | 1 2 14 12 | × 6
 //   = | 1 2 14 12 | × 0b0110
