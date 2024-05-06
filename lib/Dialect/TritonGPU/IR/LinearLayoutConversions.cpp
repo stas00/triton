@@ -39,7 +39,8 @@ LinearLayout blockedToLinearLayout(ArrayRef<int64_t> shape,
   // dimensions.
   std::vector<int32_t> shapeRemaining(shape.begin(), shape.end());
   auto layoutForDim = [&](StringAttr inDimName, ArrayRef<unsigned> sizes,
-                          ArrayRef<unsigned> order) {
+                          ArrayRef<unsigned> order,
+                          ArrayRef<unsigned> extraZeros = {}) {
     LinearLayout ret = LinearLayout::empty();
 
     // Start with the most minor dimension, which is order[0].
@@ -49,12 +50,16 @@ LinearLayout blockedToLinearLayout(ArrayRef<int64_t> shape,
       int32_t size, zeros;
       if (shapeRemaining[dim] >= sizes[dim]) {
         size = sizes[dim];
-        zeros = 0;
+        zeros = 1;
         shapeRemaining[dim] /= sizes[dim];
       } else {
         size = shapeRemaining[dim];
         zeros = size > 0 ? sizes[dim] / size : sizes[dim];
         shapeRemaining[dim] = 0;
+      }
+
+      if (!extraZeros.empty()) {
+        zeros *= extraZeros[dim];
       }
 
       ret *= LinearLayout::identity1D(size, inDimName, outDimNames[dim]) *
@@ -63,46 +68,17 @@ LinearLayout blockedToLinearLayout(ArrayRef<int64_t> shape,
     return ret;
   };
 
-  // XXX Make this less copy-paste-y.
-  auto layoutForBlock = [&] {
-    LinearLayout ret = LinearLayout::empty();
-    const auto &order = blocked.getCTAOrder();
-    const auto &sizes = blocked.getCTASplitNum();
-    const auto &CTAsPerCGA = blocked.getCTAsPerCGA();
-
-    // Start with the most minor dimension, which is order[0].
-    for (int i = 0; i < rank; i++) {
-      int dim = order[i];
-
-      int32_t size, zeros;
-      if (shapeRemaining[dim] >= sizes[dim]) {
-        size = sizes[dim];
-        zeros = 0;
-        shapeRemaining[dim] /= sizes[dim];
-      } else {
-        size = shapeRemaining[dim];
-        zeros = size > 0 ? sizes[dim] / size : sizes[dim];
-        shapeRemaining[dim] = 0;
-      }
-
-      assert(CTAsPerCGA[dim] % sizes[dim] == 0);
-
-      ret *= LinearLayout::identity1D(size, kBlock, outDimNames[dim]) *
-             LinearLayout::zeros1D(zeros, kBlock, outDimNames[dim]) *
-             LinearLayout::zeros1D(CTAsPerCGA[dim] / sizes[dim], kBlock,
-                                   outDimNames[dim]);
-    }
-    return ret;
-  };
-
-  // XXX When I move this below ctaLayout, the hopper tests fail.  Fine.  But
-  // none of the C++ tests fail!
-  //
   // First the shape is split into CTASplitNum pieces, which are distributed
   // among the NumCTAs in the CTG.  Then it's distributed among the threads in
   // the block.
-  LinearLayout ctgLayout = layoutForBlock();
-  llvm::errs() << "XXX ctgLayout:\n" << ctgLayout << "\n";
+  SmallVector<unsigned> ctgDupes;
+  for (int i = 0; i < rank; i++) {
+    ctgDupes.push_back(blocked.getCTAsPerCGA()[i] /
+                       blocked.getCTASplitNum()[i]);
+  }
+  LinearLayout ctgLayout =
+      layoutForDim(kBlock, blocked.getCTASplitNum(), blocked.getCTAOrder(),
+                   /*extraZeros=*/ctgDupes);
 
   // Split the shape among the register+thread+warp.
   LinearLayout ctaLayout =
@@ -131,12 +107,15 @@ LinearLayout blockedToLinearLayout(ArrayRef<int64_t> shape,
                                           outDimNames[dim]);
   }
 
-  // Join the layouts, with the CTG layout being more minor and its being
-  // transposed to match the order of the CTA layout.  (You can't multiply two
-  // layouts with different relative orders for the dims they have in common.)
+  // Join the layouts, with the CTG layout being more major and being transposed
+  // to match the order of the CTA layout.  (You can't multiply two layouts with
+  // different relative orders for the dims they have in common.)
   LinearLayout ret =
       ctaLayout *
       ctgLayout.transposeOuts(llvm::to_vector(ctaLayout.getOutDimNames()));
+
+  // Transpose out dims to 0, 1, 2, ...
+  ret = ret.transposeOuts(outDimNames);
 
   for (int i = 0; i < rank; i++) {
     if (ret.getOutDimSize(outDimNames[i]) != shape[i]) {

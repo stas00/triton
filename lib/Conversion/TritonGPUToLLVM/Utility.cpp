@@ -190,8 +190,7 @@ emitIndicesUsingLinearLayouts(Location loc, RewriterBase &rewriter,
     for (unsigned k = 0; k < rank; ++k) {
       outDimsLogicalOrder.push_back(str_attr("dim" + Twine(k)));
     }
-    LinearLayout ll = triton::gpu::toLinearLayout(shape, layout)
-                          .transposeOuts(outDimsLogicalOrder);
+    LinearLayout ll = triton::gpu::toLinearLayout(shape, layout);
 
     // TODO(jlebar): We could add strong typing if we wanted; for now this is
     // "stringly typed".

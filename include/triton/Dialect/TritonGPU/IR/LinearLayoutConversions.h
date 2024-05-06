@@ -22,7 +22,8 @@ namespace mlir::triton::gpu {
 // All layouts have the following output dimensions.
 //
 //  "dimi" for i in 0..n-1: the location in the n'th logical dimension of the
-//  output tensor.  These *are* reordered according to the layout's `order`.
+//  output tensor.  These also are not reordered according to the layout's
+//  `order`.
 //
 // You can flatten the input or output dimensions into a single dimension using
 // LinearLayout::flattenIns/Outs().

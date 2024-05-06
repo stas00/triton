@@ -484,6 +484,19 @@ emitBaseIndexWithinCTAForBlockedLayout(Location loc, RewriterBase &rewriter,
         mul(sizePerThreadK,
             add(multiDimThreadId[k], mul(multiDimWarpId[k], threadsPerWarpK)));
   }
+
+  // This seems to work fine.
+#if 0
+  return to_vector(make_second_range(applyLinearLayout(
+      loc, rewriter, triton::gpu::toLinearLayout(shape, blockedLayout),
+      {
+          {str_attr("register"), i32_val(0)},
+          {str_attr("thread"), laneId},
+          {str_attr("warp"), warpId},
+          {str_attr("block"), i32_val(0)},
+      })));
+#endif
+
   return multiDimBase;
 }
 
@@ -492,6 +505,22 @@ inline SmallVector<SmallVector<unsigned>>
 emitOffsetForBlockedLayout(const BlockedEncodingAttr &blockedLayout,
                            RankedTensorType type) {
   auto ctx = type.getContext();
+
+  // Fails on reduce test just like non-ll code with extra %.
+#if 0
+  SmallVector<SmallVector<unsigned>> ret;
+  LinearLayout ll = triton::gpu::toLinearLayout(type.getShape(), blockedLayout);
+  for (unsigned n = 0; n < triton::gpu::getTotalElemsPerThread(type); n++) {
+    auto offs = make_second_range(ll.apply({{str_attr("register"), n},
+                                            {str_attr("thread"), 0},
+                                            {str_attr("warp"), 0},
+                                            {str_attr("block"), 0}}));
+    auto &back = ret.emplace_back();
+    back.insert(back.end(), offs.begin(), offs.end());
+  }
+  return ret;
+#endif
+
   auto shape = type.getShape();
   auto sizePerThread = blockedLayout.getSizePerThread();
   auto threadsPerWarp = blockedLayout.getThreadsPerWarp();

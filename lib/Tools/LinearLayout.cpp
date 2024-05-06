@@ -127,6 +127,10 @@ BasesT validateBases(BasesT bases) {
 LinearLayout::LinearLayout(BasesT bases)
     : bases(validateBases(std::move(bases))) {}
 
+// TODO: Refactor this into
+//   pair<StringAttr, vector<vector<int>>> +
+//   vector<StringAttr> /*out dim names*/
+// ?
 LinearLayout::LinearLayout(
     ArrayRef<std::pair<StringAttr,
                        ArrayRef<std::pair<StringAttr, std::vector<int32_t>>>>>
@@ -352,15 +356,14 @@ std::string LinearLayout::toString() const {
   if (bases.empty())
     return "(empty layout)\n";
 
-  int maxInDimNameLen = llvm::max_element(getInDimNames(),
-                                          [](StringAttr a, StringAttr b) {
-                                            return a.size() < b.size();
-                                          })
-                            ->str()
-                            .size();
-
+  // TODO: Add spaces for alignment.
   std::string ret;
   for (const auto &inDim : getInDimNames()) {
+    if (getInDimSizeLog2(inDim) == 0) {
+      ret += " - " + inDim.str() + " is a size 1 dimension\n";
+      continue;
+    }
+
     ret +=
         " - " +
         join(llvm::seq(getInDimSizeLog2(inDim)), "\n   ",

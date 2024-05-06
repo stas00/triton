@@ -135,30 +135,57 @@ TEST_F(LinearLayoutConversionsTest, ReplicateInRegisterDim) {
                     }));
 }
 
-TEST_F(LinearLayoutConversionsTest, TooLargeOneDimTooSmallAnother) {
+TEST_F(LinearLayoutConversionsTest, OneDimTooLargeAnotherTooSmall) {
   auto blockedLayout =
       blocked({1, 4}, {8, 4}, {4, 1}, {2, 2}, {2, 1}, {1, 0}, {1, 0});
   auto ll = toLinearLayout({128, 16}, blockedLayout);
   EXPECT_EQ(ll, LinearLayout({
                     {S("register"),
                      {
-                         {S("dim1"), {1, 2, 0}},
                          {S("dim0"), {0, 0, 32}},
+                         {S("dim1"), {1, 2, 0}},
                      }},
                     {S("thread"),
                      {
-                         {S("dim1"), {4, 8, 0, 0, 0}},
                          {S("dim0"), {0, 0, 1, 2, 4}},
+                         {S("dim1"), {4, 8, 0, 0, 0}},
                      }},
                     {S("warp"),
                      {
-                         {S("dim1"), {0, 0}},
                          {S("dim0"), {8, 16}},
+                         {S("dim1"), {0, 0}},
                      }},
                     {S("block"),
                      {
-                         {S("dim1"), {0, 0}},
                          {S("dim0"), {0, 64}},
+                         {S("dim1"), {0, 0}},
+                     }},
+                }));
+}
+
+TEST_F(LinearLayoutConversionsTest, RepeatInCTGDimFirst) {
+  // We have a 4-element shape and an 8-element layout (4 elems per CTA).  So
+  // the layout will map two inputs to each output.  The question is, which two
+  // inputs?  The answer is, we split between CTAs first, so the two CTAs have
+  // distinct elements.
+  auto blockedLayout = blocked({1}, {1}, {4}, {2}, {2}, {0}, {0});
+  auto ll = toLinearLayout({4}, blockedLayout);
+  EXPECT_EQ(ll, LinearLayout({
+                    {S("register"),
+                     {
+                         {S("dim0"), {}},
+                     }},
+                    {S("thread"),
+                     {
+                         {S("dim0"), {}},
+                     }},
+                    {S("warp"),
+                     {
+                         {S("dim0"), {1, 0}},
+                     }},
+                    {S("block"),
+                     {
+                         {S("dim0"), {2}},
                      }},
                 }));
 }

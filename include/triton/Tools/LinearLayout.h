@@ -52,8 +52,8 @@ namespace mlir::triton {
 // table.  Here's how we might compute some of the values.
 //
 //    L(0,0) = L(1 ⊕ 1, 0 ⊕ 0) = L(1,0) ⊕ L(1,0) = (1,1) ⊕ (1,1) = (0,0)
-//    L(0,3) = L(0, 2 ⊕ 1)     = L(0,2) ⊕ L(0,1) = (0,2) ⊕ (0,1) = (0,3)
-//    L(3,0) = L(2 ⊕ 1, 0)     = L(2,0) ⊕ L(1,0) = (2,2) ⊕ (1,1) = (3,3)
+//    L(0,3) = L(0 ⊕ 0, 2 ⊕ 1) = L(0,2) ⊕ L(0,1) = (0,2) ⊕ (0,1) = (0,3)
+//    L(3,0) = L(2 ⊕ 1, 0 ⊕ 0) = L(2,0) ⊕ L(1,0) = (2,2) ⊕ (1,1) = (3,3)
 //    L(3,3) = L(3 ⊕ 0, 0 ⊕ 3) = L(3,0) ⊕ L(0,3) = (3,3) ⊕ (0,3) = (3,0).
 //
 // (Notice it's a consequence of the linearity rule that L(0,0) = (0,0), no
@@ -92,8 +92,8 @@ namespace mlir::triton {
 //     another LL.
 //
 //  2. "Apply" an LL, i.e. use it to map an input index to an output index.
-//     The function for this lives in TritonGPUToLLVM.h because it generates
-//     LLVM-dialect code to do the mapping.
+//     A function for this that uses LLVM-dialect MLIR as its input and output
+//     lives in TritonGPUToLLVM.h.
 //
 //  3. Convert an existing Triton layout (e.g. BlockedLayoutAttr) to an LL.
 //     These functions live in TritonGPU/LinearLayoutConversions.h.  During
@@ -172,8 +172,8 @@ namespace mlir::triton {
 //
 // We require that all output values are covered by some input value, i.e. the
 // function L is surjective.  But multiple input values can map to the same
-// output value. This represents the idea that the same logical tensor value can
-// be stored in multiple places in the hardware.
+// output value. This represents the idea that the same logical tensor element
+// can be stored in multiple places in the hardware.
 //
 // ## Why map hardware loc -> tensor index and not the other way around?
 //
@@ -456,7 +456,9 @@ public:
   //    - identity1D(4, "i", "o1") * identity1D(8, "i", "o2") =>
   //      L(x) = (x % 4, x / 4)
   //
-  // Notice that this operation is not commutative.
+  // Notice that this operation is not commutative.  It's also not associative.
+  // TODO: Can I modify the definition to make it associative?  Pretty confusing
+  // if not.  If I can't, add an example.
   //
   // Requires: Any in/out dimensions which are in both outer and inner appear in
   // the same relative order.
